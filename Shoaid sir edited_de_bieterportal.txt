@@ -1,0 +1,298 @@
+import logging
+import re
+import time
+from datetime import date, datetime, timedelta
+
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC 
+from deep_translator import GoogleTranslator
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from deep_translator import GoogleTranslator
+import common.OutputXML
+import functions as fn
+from common.NoticeData import NoticeData
+import ml.cpv_classifier as classifier
+from false_cpv import false_cpv
+from functions import ET
+from selenium.webdriver.support.ui import Select
+MAX_NOTICES = 2000
+
+ml_cpv = 0
+notice_count = 0
+output_xml_file = common.OutputXML.OutputXML("de_bieterportal")
+
+
+def extract_and_save_notice(tender_html_element):
+    global ml_cpv
+    global notice_count
+    global notice_data
+    
+    wait = WebDriverWait(page_details, 2) 
+    notice_data = NoticeData()
+
+    notice_data.performance_country = 'Germany'
+    notice_data.contact_country = 'Germany'
+    notice_data.procurement_method = "Other"
+    notice_data.language = "DE"
+    
+    if(url == 'https://bieterportal.noncd.db.de/evergabe.bieter/eva/supplierportal/portal/tabs/vergaben'):
+        notice_data.notice_type = "spn"
+    elif(url == 'https://bieterportal.noncd.db.de/evergabe.bieter/eva/supplierportal/portal/tabs/zuschlagsbekanntmachungen'):
+        notice_data.notice_type = "ca"
+    elif(url == 'https://bieterportal.noncd.db.de/evergabe.bieter/eva/supplierportal/portal/tabs/vorinformationen'):
+        notice_data.notice_type = "pp"
+    logging.info(notice_data.notice_type)
+    
+    try:
+        title_en = WebDriverWait(tender_html_element, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.color-primary.card-title-style"))).text
+        notice_data.title_en = GoogleTranslator(source='de', target='en').translate(title_en)
+    except:
+        notice_data.title_en = 'Please refer to notice details'
+    logging.info(notice_data.title_en)
+    
+    if notice_data.title_en is None:
+        return page_check
+    
+    try:
+        notice_data.buyer = WebDriverWait(tender_html_element, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.contracting-authority-style > span'))).text
+    except:
+        pass
+    logging.info(notice_data.buyer)
+    
+#     if (notice_data.notice_type == "spn" or notice_data.notice_type == "ca"):
+        
+        
+    try:
+        notice_data.reference =  WebDriverWait(tender_html_element, 10).until(EC.presence_of_element_located((By.CSS_SELECTOR,'div:nth-child(1) > div:nth-child(1) > label'))).text
+        logging.info(notice_data.reference)
+    except:
+        pass
+#     else:
+#         try:
+#             notice_data.reference =  tender_html_element.find_element(By.CSS_SELECTOR,'div:nth-child(1) > div:nth-child(1) > label').text
+#             logging.info(notice_data.reference)
+#         except:
+#             pass
+        
+    if (notice_data.notice_type == "spn" or notice_data.notice_type == "ca"):  
+        WebDriverWait(page_main, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.button-area-style button'))).click()
+        time.sleep(10)
+        page_main.current_url
+        logging.info(page_main.current_url)
+        
+    if notice_data.notice_type == "spn" :
+        try:
+            notice_data.published_date = page_main.find_element(By.XPATH,'//*[contains(text(), "Bekanntmachung")]//following::div').text
+            notice_data.published_date = notice_data.published_date.split(",")[0]
+            notice_data.published_date = datetime.strptime(notice_data.published_date,'%d.%m.%Y').strftime('%Y/%m/%d')
+        except:
+            notice_data.published_date = threshold
+            
+    elif notice_data.notice_type == "ca":
+        try:
+            notice_data.published_date = page_main.find_element(By.XPATH,'//*[contains(text(), "Veröffentlichungsdatum")]//following::div').text
+            notice_data.published_date = notice_data.published_date.split(",")[0]
+            notice_data.published_date = datetime.strptime(notice_data.published_date,'%d.%m.%Y').strftime('%Y/%m/%d')
+        except:
+            notice_data.published_date = threshold
+    else:
+        try:
+            notice_data.published_date = tender_html_element.find_element(By.CSS_SELECTOR,'div:nth-child(2) > div:nth-child(1) > label').text 
+            notice_data.published_date = notice_data.published_date.split(",")[0]
+            notice_data.published_date = datetime.strptime(notice_data.published_date,'%d.%m.%Y').strftime('%Y/%m/%d')
+        except:
+            notice_data.published_date = threshold
+    logging.info(notice_data.published_date)
+            
+        
+#     if notice_data.published_date < threshold:
+#         return
+     
+        
+    if (notice_data.notice_type == "spn"):
+        try:
+            notice_data.end_date = page_main.find_element(By.XPATH,'//*[contains(text(), "Einreichungsfrist")]//following::div').text 
+            notice_data.end_date = notice_data.end_date.split(",")[0]
+            notice_data.end_date  = datetime.strptime(notice_data.end_date ,'%d.%m.%Y').strftime('%Y/%m/%d')
+        except:
+            try:
+                end_date = datetime.strptime(notice_data.published_date,'%Y/%m/%d') + timedelta(15)
+                notice_data.end_date = end_date.strftime('%Y/%m/%d')
+            except:
+                notice_data.end_date = " "             
+        logging.info(notice_data.end_date) 
+                
+    if (notice_data.notice_type == "pp"):
+        end_date = datetime.strptime(notice_data.published_date,'%Y/%m/%d') + timedelta(365)
+        notice_data.end_date = end_date.strftime('%Y/%m/%d')
+        logging.info(notice_data.end_date) 
+            
+        id=page_main.find_element(By.CSS_SELECTOR,'dashboard-project-prior-card > mat-card').get_attribute('id')
+        id= id[-36:]
+        notice_data.notice_url="https://bieterportal.noncd.db.de/evergabe.bieter/api/supplier/subproject/"+str(id)+"/attachment/contractnotice"
+        logging.info(notice_data.notice_url)
+    
+    try:
+        cpvs = page_main.find_elements(By.XPATH,'//*[contains(text(), "Klassifizierung")]//following::div')
+        notice_data.cpvs.clear()
+#         for cpv in cpvs:
+        cpv = cpv.text.split('-')[0]
+        notice_data.cpvs.append(cpv)
+            
+    except:
+        cpvs = classifier.get_cpvs(notice_data.title_en.lower(), notice_data.category)
+        cpv_count = 0
+        notice_data.cpvs.clear()
+        if cpvs:
+            for cpv in cpvs:
+                if cpv not in false_cpv:
+                    notice_data.cpvs.append(cpv)
+                    cpv_count += 1
+        if cpv_count != 0:
+            ml_cpv += 1
+    logging.info(notice_data.cpvs)
+            
+    try:
+        notice_data.address =WebDriverWait(page_main, 5).until(EC.presence_of_element_located((By.XPATH,'//*[contains(text(), "Adresse")]//following::div'))).text
+    except:
+        notice_data.address = "Please refer notice details"
+    logging.info(notice_data.address) 
+
+    if (notice_data.notice_type == "ca"):
+        try:
+            notice_data.contact_phone = WebDriverWait(page_main, 5).until(EC.presence_of_element_located((By.XPATH,"//*[contains(text(),'Telefon')]//following::div"))).text
+        except:
+            notice_data.contact_phone = "Please refer notice details"
+        logging.info(notice_data.contact_phone)
+
+        try:
+            notice_data.contact_email = page_main.find_element(By.XPATH,"//*[contains(text(),'E-Mail')]//following::div").text
+        except:
+            notice_data.contact_email = "Please refer notice details"
+        logging.info(notice_data.contact_email)
+
+        try:
+            notice_data.award_company =  page_main.find_element(By.XPATH,"//*[contains(text(),'Firma')]//following::div").text
+        except:
+            notice_data.award_company = "Please refer notice details"
+        logging.info(notice_data.award_company)
+    
+    try:
+        notice_data.notice_text = WebDriverWait(page_main, 5).until(EC.presence_of_element_located((By.XPATH, '/html/body/app/supplier-portal-frame/div/mat-sidenav-container/mat-sidenav-content/div/project-details/div/div[2]/div[1]/mat-card/mat-card-content/div'))).get_attribute('outerHTML')
+    except:
+        try:
+            notice_data.notice_text = WebDriverWait(page_main, 5).until(EC.presence_of_element_located((By.XPATH, '/html/body/app/supplier-portal-frame/div/mat-sidenav-container/mat-sidenav-content/div/project-award-details/div/div/div/mat-card/mat-card-content/div'))).get_attribute('outerHTML')
+        except:
+            notice_data.notice_text = ""
+            notice_data.notice_text += '</br>'
+            notice_data.notice_text = 'Title:'
+            notice_data.notice_text += notice_data.title_en
+            notice_data.notice_text += '</br>'
+            notice_data.notice_text += 'Reference No. '
+            notice_data.notice_text += notice_data.reference
+            notice_data.notice_text += 'publish_date : '
+            notice_data.notice_text += notice_data.published_date
+            notice_data.notice_text += 'Buyer'
+            notice_data.notice_text += notice_data.buyer
+            notice_data.notice_text += '</br>'
+            if notice_data.notice_type != 'ca':
+                notice_data.notice_text += ' End_date :'
+                notice_data.notice_text += notice_data.end_date
+                notice_data.notice_text += '</br>'
+            if notice_data.address is not None:
+                notice_data.notice_text += 'Address'
+                notice_data.notice_text += notice_data.address
+                notice_data.notice_text += '</br>'
+            if notice_data.contact_phone is not None:
+                notice_data.notice_text += 'phone'
+                notice_data.notice_text += notice_data.contact_phone
+                notice_data.notice_text += '</br>'
+            if notice_data.contact_email is not None:
+                notice_data.notice_text += 'email'        
+                notice_data.notice_text +=notice_data.contact_email
+                notice_data.notice_text += '</br>'
+            if notice_data.award_company is not None:
+                notice_data.notice_text += 'Awarding Company'
+                notice_data.notice_text += notice_data.award_company
+                notice_data.notice_text += '</br></br>'
+
+    
+    if (notice_data.notice_type == "spn" or notice_data.notice_type == "ca"):  
+        try:
+            page_main.execute_script("window.history.go(-1)")
+            time.sleep(5)
+        except:
+            pass
+
+    output_xml_file.writeNoticeToXMLFile(notice_data)
+    notice_count += 1
+    logging.info('----------------------------------')
+    
+#-------------------------------------------
+page_main = fn.init_chrome_driver()
+page_details = fn.init_chrome_driver()
+pg1=0
+try:
+    th = date.today() - timedelta(1)
+    threshold = th.strftime('%Y/%m/%d')
+    logging.info("Scraping from or greater than: " + threshold)
+    
+    urls = ['https://bieterportal.noncd.db.de/evergabe.bieter/eva/supplierportal/portal/tabs/vergaben',
+            'https://bieterportal.noncd.db.de/evergabe.bieter/eva/supplierportal/portal/tabs/zuschlagsbekanntmachungen',
+            'https://bieterportal.noncd.db.de/evergabe.bieter/eva/supplierportal/portal/tabs/vorinformationen']
+
+    
+    for url in urls:
+        logging.info('----------------------------------')
+        logging.info(url)
+        fn.load_page_xpath(page_main, url, '//div[@id="project-vertical-container"]', 120)  
+
+        for i in range(1,3):   #pages
+            page_check=WebDriverWait(page_main, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR,'div:nth-child(1) > div:nth-child(1) > label'))).text
+            rows = WebDriverWait(page_main, 10).until(EC.presence_of_element_located((By.XPATH, '//div[@id="project-vertical-container"]'))).find_elements(By.CSS_SELECTOR,'div.resolve-flex-column')
+            length_rows = len(rows)
+            logging.info("length ="+str(length_rows)) 
+
+            for k in range(0, 2):   #rows
+                tender_html_element = WebDriverWait(page_main, 20).until(EC.presence_of_element_located((By.XPATH, '//*[@id="project-vertical-container"]'))).find_elements(By.CSS_SELECTOR, 'div.resolve-flex-column')[k]
+                extract_and_save_notice(tender_html_element)
+                if notice_count >= MAX_NOTICES:
+                    break
+                    
+            
+
+            try:
+                nxt_page=WebDriverWait(page_main, 120).until(EC.presence_of_element_located((By.XPATH, '//*[@class="mat-focus-indicator mat-tooltip-trigger mat-paginator-navigation-next mat-icon-button mat-button-base"]'))).click()
+                time.sleep(10)
+                logging.info("NEXT PAGE")
+                MAX_LOAD_DRIVER_ATTEMPTS = 3
+                nxt_page_check = WebDriverWait(page_main, 60).until(EC.presence_of_element_located((By.CSS_SELECTOR,'div:nth-child(1) > div:nth-child(1) > label'))).text
+                logging.info("page_check "+page_check)
+                logging.info("nxt_page_check= "+nxt_page_check)
+                for loop_counter in range(1, MAX_LOAD_DRIVER_ATTEMPTS):
+                    if nxt_page_check != page_check:
+                        break
+                    else:
+                        pass
+
+            except:
+                logging.info("no next page")
+                break
+                    
+    logging.info("Finished processing. Scraped {} notices".format(notice_count))
+    fn.session_log('de_bieterportal', notice_count, 0, ml_cpv, 'XML uploaded')
+    
+except Exception as e:
+    try:
+        fn.error_log('de_bieterportal', e)
+        fn.session_log('de_bieterportal', notice_count, 0, ml_cpv, 'Script error')
+    except:
+        pass
+    raise e
+finally:
+    logging.info('finally')
+    page_main.quit()
+    page_details.quit()
+    output_xml_file.copyFinalXMLToServer("europe")
